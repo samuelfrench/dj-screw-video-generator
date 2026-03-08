@@ -531,13 +531,13 @@ def build_screwed_video(chop_points):
         f"aresample=44100,"
         f"atempo={SCREW_RATE/0.65},"
         f"aecho=0.8:0.9:35:{ECHO_DECAY},"
-        f"equalizer=f=50:t=q:w=0.7:g=4,"
-        f"equalizer=f=120:t=q:w=1:g=3,"
-        f"equalizer=f=400:t=q:w=1.5:g=-4,"
-        f"equalizer=f=1000:t=q:w=1.5:g=-6,"
-        f"equalizer=f=3000:t=q:w=1:g=-2,"
-        f"equalizer=f=6000:t=q:w=1:g=-2,"
-        f"loudnorm=I=-15:TP=-0.5:LRA=11[ascrewed]"
+        f"equalizer=f=50:t=q:w=0.7:g=7,"
+        f"equalizer=f=120:t=q:w=1:g=4,"
+        f"equalizer=f=400:t=q:w=1.5:g=-2,"
+        f"equalizer=f=1000:t=q:w=1.5:g=-3,"
+        f"equalizer=f=3000:t=q:w=1:g=-1,"
+        f"equalizer=f=6000:t=q:w=1:g=0,"
+        f"loudnorm=I=-13:TP=-0.3:LRA=9[ascrewed]"
     )
 
     cmd = [
