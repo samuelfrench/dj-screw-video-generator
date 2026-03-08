@@ -254,7 +254,7 @@ def build_chop_zone(input_path, output_path, chop_time, magnitude, median_mag):
     # Vary params based on magnitude (major vs minor chop)
     if magnitude > median_mag:
         phrase_len = PHRASE_LEN_MAJOR
-        repeats = 3  # play phrase 3 times total (2 extra)
+        repeats = 2  # play phrase 2 times total (1 extra)
     else:
         phrase_len = PHRASE_LEN_MINOR
         repeats = 2  # play phrase 2 times total (1 extra)
@@ -602,7 +602,6 @@ def main():
     if args.speed is not None:
         SCREW_RATE = args.speed
     if args.echo is not None:
-        global ECHO_DECAY
         ECHO_DECAY = args.echo
 
     # Auto-detect title from YouTube if not provided
