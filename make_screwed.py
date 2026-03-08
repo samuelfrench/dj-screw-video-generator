@@ -29,8 +29,7 @@ SONG_TITLE = None
 YT_URL = None
 
 # Chop parameters (derived from real DJ Screw analysis)
-DIP_DURATION = 0.35   # seconds — brief "record lift" (real Screw: 0.25-0.5s)
-DIP_VOLUME = 0.15     # volume multiplier during dip (real Screw: ~15dB drop)
+BACKSPIN_DURATION = 0.25  # seconds — reverse audio to simulate turntable backspin
 PHRASE_LEN_MAJOR = 4.0  # seconds — phrase length for major chops
 PHRASE_LEN_MINOR = 3.0  # seconds — phrase length for minor chops
 
@@ -241,14 +240,14 @@ def detect_chop_points(filepath):
 
 
 def build_chop_zone(input_path, output_path, chop_time, magnitude, median_mag):
-    """Run one ffmpeg pass to insert a dip + phrase repeat at chop_time.
+    """Run one ffmpeg pass to insert a backspin + phrase repeat at chop_time.
 
-    Real DJ Screw pattern (from analysis):
-    1. Brief dip (0.35s volume drop ~15dB) — "record lift"
+    Real DJ Screw turntable technique:
+    1. Backspin (~0.25s of reversed audio) — physically spinning the record back
     2. Phrase repeat (3-4s segment before chop, played 2-3x)
     3. Resume from chop point
 
-    Timeline: [pre] [dip] [phrase x repeats] [post from chop_time]
+    Timeline: [pre] [backspin] [phrase x repeats] [post from chop_time]
     """
     # Vary params based on magnitude (major vs minor chop)
     if magnitude > median_mag:
@@ -263,12 +262,11 @@ def build_chop_zone(input_path, output_path, chop_time, magnitude, median_mag):
     phrase_end = chop_time
     actual_phrase_len = phrase_end - phrase_start
 
-    # Dip sits right before the phrase zone
-    dip_end = phrase_start
-    dip_start = max(0.05, dip_end - DIP_DURATION)
-    actual_dip_dur = dip_end - dip_start
+    # Backspin: take audio from just before the phrase zone and reverse it
+    backspin_end = phrase_start
+    backspin_start = max(0.05, backspin_end - BACKSPIN_DURATION)
 
-    # Number of splits: pre + dip + phrase*repeats + post
+    # Number of splits: pre + backspin + phrase*repeats + post
     n_splits = 1 + 1 + repeats + 1
     filter_parts = []
 
@@ -283,24 +281,23 @@ def build_chop_zone(input_path, output_path, chop_time, magnitude, median_mag):
     concat_a = []
 
     # Pre section (unchanged)
-    filter_parts.append(f"[v{idx}]trim=0:{dip_start},setpts=PTS-STARTPTS[vpre]")
-    filter_parts.append(f"[a{idx}]atrim=0:{dip_start},asetpts=PTS-STARTPTS[apre]")
+    filter_parts.append(f"[v{idx}]trim=0:{backspin_start},setpts=PTS-STARTPTS[vpre]")
+    filter_parts.append(f"[a{idx}]atrim=0:{backspin_start},asetpts=PTS-STARTPTS[apre]")
     concat_v.append("[vpre]")
     concat_a.append("[apre]")
     idx += 1
 
-    # Dip section — brief volume drop + slight brightness dip
-    # Real DJ Screw: ~15dB drop for 0.25-0.5s (momentary record lift)
+    # Backspin section — reverse the audio to simulate turntable backspin
     filter_parts.append(
-        f"[v{idx}]trim={dip_start}:{dip_end},setpts=PTS-STARTPTS,"
-        f"eq=brightness=-0.15:eval=init[vdip]"
+        f"[v{idx}]trim={backspin_start}:{backspin_end},setpts=PTS-STARTPTS,"
+        f"reverse[vspin]"
     )
     filter_parts.append(
-        f"[a{idx}]atrim={dip_start}:{dip_end},asetpts=PTS-STARTPTS,"
-        f"volume={DIP_VOLUME}[adip]"
+        f"[a{idx}]atrim={backspin_start}:{backspin_end},asetpts=PTS-STARTPTS,"
+        f"areverse[aspin]"
     )
-    concat_v.append("[vdip]")
-    concat_a.append("[adip]")
+    concat_v.append("[vspin]")
+    concat_a.append("[aspin]")
     idx += 1
 
     # Phrase repeats (the classic DJ Screw "rewind and replay")
@@ -344,24 +341,27 @@ def build_chop_zone(input_path, output_path, chop_time, magnitude, median_mag):
         "-filter_complex", filtergraph,
         "-map", "[vout]", "-map", "[aout]",
         "-c:v", "libx264", "-preset", "fast", "-crf", "18",
-        "-g", "15", "-keyint_min", "15",
         "-c:a", "aac", "-b:a", "256k",
-        "-movflags", "+faststart",
         str(output_path),
     ]
+
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     if result.returncode != 0:
         print(f"    Chop zone error:\n{result.stderr[-1500:]}")
         sys.exit(1)
 
     # Verify output is valid
-    if not Path(output_path).exists() or Path(output_path).stat().st_size < 1000:
-        print(f"    Error: output file missing or too small")
+    if not Path(output_path).exists():
+        print(f"    Error: output file does not exist")
+        sys.exit(1)
+    fsize = Path(output_path).stat().st_size
+    if fsize < 1000:
+        print(f"    Error: output file too small ({fsize} bytes)")
         sys.exit(1)
 
     kind = "major" if magnitude > median_mag else "minor"
     extra = repeats - 1
-    print(f"    {kind}: {actual_phrase_len:.1f}s phrase x{repeats} (+{extra * actual_phrase_len:.1f}s)")
+    print(f"    {kind}: backspin + {actual_phrase_len:.1f}s phrase x{repeats} (+{extra * actual_phrase_len:.1f}s)")
 
 
 def build_screwed_video(chop_points):
@@ -388,7 +388,8 @@ def build_screwed_video(chop_points):
         zone_num = len(sorted_points) - zone_idx
         print(f"  Chop zone {zone_num}/{len(chop_points)} at {chop_time:.1f}s...")
 
-        output_path = str(BASE_DIR / f"chop_pass_{zone_idx}.mp4")
+        slug = slugify(SONG_TITLE)
+        output_path = str(BASE_DIR / f"chop_pass_{slug}_{zone_idx}.mp4")
         build_chop_zone(current_input, output_path, chop_time, magnitude, median_mag)
 
         # Clean up previous intermediate (but never the original)
@@ -398,7 +399,7 @@ def build_screwed_video(chop_points):
         print(f"    Duration: {get_duration(current_input):.1f}s")
 
     # Rename final intermediate for Pass 2
-    intermediate = BASE_DIR / "chopped_intermediate.mp4"
+    intermediate = BASE_DIR / f"chopped_intermediate_{slugify(SONG_TITLE)}.mp4"
     if intermediate.exists():
         intermediate.unlink()
     Path(current_input).rename(intermediate)
@@ -534,12 +535,13 @@ def main():
             print(f"Transcoding from {video_codec} to H264 (required for chop filters)...")
             r = subprocess.run([
                 "ffmpeg", "-y", "-i", str(ORIGINAL),
+                "-vf", "scale='min(1920,iw)':-2",
                 "-c:v", "libx264", "-preset", "fast", "-crf", "18",
                 "-g", "15", "-keyint_min", "15",
-                "-c:a", "aac", "-b:a", "256k",
+                "-c:a", "aac", "-b:a", "256k", "-ac", "2",
                 "-movflags", "+faststart",
                 str(h264_path)
-            ], capture_output=True, text=True, timeout=600)
+            ], capture_output=True, text=True, timeout=900)
             if r.returncode != 0:
                 print(f"Transcode error: {r.stderr[-500:]}")
                 sys.exit(1)
