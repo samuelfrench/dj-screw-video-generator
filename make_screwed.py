@@ -31,6 +31,7 @@ YT_URL = None
 # Chop parameters (derived from real DJ Screw analysis)
 BACKSPIN_DURATION = 0.25  # seconds — reverse audio to simulate turntable backspin
 ECHO_DECAY = 0.15         # echo decay amount (lower = less echo, cleaner sound)
+PRAISE_JESUS = False      # include "Praise Jesus" in overlay text
 PHRASE_LEN_MAJOR = 4.0  # seconds — phrase length for major chops
 PHRASE_LEN_MINOR = 3.0  # seconds — phrase length for minor chops
 
@@ -46,9 +47,14 @@ def download_video():
         "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]",
         "-o", str(ORIGINAL),
         "--merge-output-format", "mp4",
+        "--cookies-from-browser", "firefox:/home/sam/snap/firefox/common/.mozilla/firefox",
+        "--js-runtimes", "node",
         YT_URL,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    # Ensure Node.js is in PATH for yt-dlp's JS challenge solver
+    env = os.environ.copy()
+    env["PATH"] = "/home/sam/.nvm/versions/node/v24.11.1/bin:" + env.get("PATH", "")
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, env=env)
     if result.returncode != 0:
         print(f"yt-dlp error: {result.stderr[-500:]}")
         sys.exit(1)
@@ -355,6 +361,8 @@ def build_chop_zone(input_path, output_path, chop_time, magnitude, median_mag):
     # Verify output is valid
     if not Path(output_path).exists():
         print(f"    Error: output file does not exist")
+        print(f"    ffmpeg stderr (last 2000 chars):\n{result.stderr[-2000:]}")
+        print(f"    ffmpeg return code: {result.returncode}")
         sys.exit(1)
     fsize = Path(output_path).stat().st_size
     if fsize < 1000:
@@ -522,7 +530,7 @@ def build_screwed_video(chop_points):
         f"eq=brightness=-0.05:saturation=0.9,"
         f"drawtext=fontfile={font}:text='INSPIRED BY DJ SCREW 1971–2000':fontsize=28:"
         f"fontcolor=0xBB66EE@0.7:x=20:y=h-80:shadowcolor=black@0.5:shadowx=1:shadowy=1,"
-        f"drawtext=fontfile={font}:text='TEXAS LEGEND. Keeping the dream alive. Praise Jesus.':fontsize=22:"
+        f"drawtext=fontfile={font}:text='TEXAS LEGEND. Keeping the dream alive.{' Praise Jesus.' if PRAISE_JESUS else ''}':fontsize=22:"
         f"fontcolor=0x9944CC@0.6:x=20:y=h-45:shadowcolor=black@0.5:shadowx=1:shadowy=1"
         f"[vscrewed];"
         f"[1:v]scale=-1:ih/5,format=rgba,colorchannelmixer=aa=0.4[ovr];"
@@ -579,7 +587,7 @@ def slugify(text):
 
 
 def main():
-    global ORIGINAL, OUTPUT, SONG_TITLE, YT_URL, SCREW_RATE, ECHO_DECAY
+    global ORIGINAL, OUTPUT, SONG_TITLE, YT_URL, SCREW_RATE, ECHO_DECAY, PRAISE_JESUS
 
     import argparse
     parser = argparse.ArgumentParser(description="DJ Screw any music video")
@@ -596,6 +604,8 @@ def main():
                         help="Echo decay (default 0.15, lower = less echo)")
     parser.add_argument("--intro", action="store_true",
                         help="Add DJ Screw spoken intro (leaned out rambling)")
+    parser.add_argument("--praise-jesus", action="store_true", default=False,
+                        help="Include 'Praise Jesus' in overlay text (default: no)")
     args = parser.parse_args()
 
     YT_URL = args.url
@@ -603,14 +613,22 @@ def main():
         SCREW_RATE = args.speed
     if args.echo is not None:
         ECHO_DECAY = args.echo
+    if args.praise_jesus:
+        PRAISE_JESUS = True
 
     # Auto-detect title from YouTube if not provided
     if args.title:
         SONG_TITLE = args.title
     else:
         print("Detecting song title...")
-        r = subprocess.run([YT_DLP, "--get-title", YT_URL],
-                           capture_output=True, text=True, timeout=30)
+        env = os.environ.copy()
+        env["PATH"] = "/home/sam/.nvm/versions/node/v24.11.1/bin:" + env.get("PATH", "")
+        r = subprocess.run([
+            YT_DLP, "--get-title",
+            "--cookies-from-browser", "firefox:/home/sam/snap/firefox/common/.mozilla/firefox",
+            "--js-runtimes", "node",
+            YT_URL
+        ], capture_output=True, text=True, timeout=30, env=env)
         SONG_TITLE = r.stdout.strip() if r.returncode == 0 else "Unknown Track"
 
     slug = slugify(SONG_TITLE)
