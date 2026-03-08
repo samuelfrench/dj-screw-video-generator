@@ -30,6 +30,7 @@ YT_URL = None
 
 # Chop parameters (derived from real DJ Screw analysis)
 BACKSPIN_DURATION = 0.25  # seconds — reverse audio to simulate turntable backspin
+ECHO_DECAY = 0.15         # echo decay amount (lower = less echo, cleaner sound)
 PHRASE_LEN_MAJOR = 4.0  # seconds — phrase length for major chops
 PHRASE_LEN_MINOR = 3.0  # seconds — phrase length for minor chops
 
@@ -210,27 +211,28 @@ def detect_chop_points(filepath):
         spacing = duration / 7
         return [(spacing * i, 5.0) for i in range(1, 7)]
 
-    # Sort by magnitude (strongest first), pick top with 15s minimum spacing
+    # Sort by magnitude (strongest first), pick top with 10s minimum spacing
+    # Real DJ Screw mixes have frequent backspins — aim for one every 10-20s
     jumps.sort(key=lambda x: -x[1])
     selected = []
     for t, mag in jumps:
         if t < 8.0 or t > duration - 8.0:
             continue
-        if all(abs(t - st) >= 15.0 for st, _ in selected):
+        if all(abs(t - st) >= 10.0 for st, _ in selected):
             selected.append((t, mag))
-            if len(selected) >= 8:
+            if len(selected) >= 14:
                 break
 
     selected.sort(key=lambda x: x[0])
 
-    # Ensure at least 3 chop points by filling gaps
-    if len(selected) < 3:
-        spacing = duration / 5
-        for i in range(1, 5):
-            t = spacing * i
-            if 8.0 < t < duration - 8.0 and all(abs(t - st) >= 15.0 for st, _ in selected):
-                selected.append((t, 4.0))
-        selected.sort(key=lambda x: x[0])
+    # Fill gaps — ensure backspins every ~15s throughout the track
+    gap_fill_spacing = 15.0
+    t = 10.0
+    while t < duration - 8.0:
+        if all(abs(t - st) >= 10.0 for st, _ in selected):
+            selected.append((t, 3.0))
+        t += gap_fill_spacing
+    selected.sort(key=lambda x: x[0])
 
     print(f"  Found {len(selected)} chop points:")
     for t, mag in selected:
@@ -427,7 +429,7 @@ def build_screwed_video(chop_points):
         f"[0:a]asetrate=44100*0.65,"
         f"aresample=44100,"
         f"atempo={SCREW_RATE/0.65},"
-        f"aecho=0.8:0.9:35:0.15,"
+        f"aecho=0.8:0.9:35:{ECHO_DECAY},"
         f"equalizer=f=50:t=q:w=0.7:g=4,"
         f"equalizer=f=120:t=q:w=1:g=3,"
         f"equalizer=f=400:t=q:w=1.5:g=-4,"
@@ -476,7 +478,7 @@ def slugify(text):
 
 
 def main():
-    global ORIGINAL, OUTPUT, SONG_TITLE, YT_URL
+    global ORIGINAL, OUTPUT, SONG_TITLE, YT_URL, SCREW_RATE, ECHO_DECAY
 
     import argparse
     parser = argparse.ArgumentParser(description="DJ Screw any music video")
@@ -487,9 +489,18 @@ def main():
                         help="Song title (auto-detected if not provided)")
     parser.add_argument("--skip", type=float, default=0,
                         help="Skip first N seconds of the video (cut intro)")
+    parser.add_argument("--speed", type=float, default=None,
+                        help="Override screw speed (default 0.55, lower = slower)")
+    parser.add_argument("--echo", type=float, default=None,
+                        help="Echo decay (default 0.15, lower = less echo)")
     args = parser.parse_args()
 
     YT_URL = args.url
+    if args.speed is not None:
+        SCREW_RATE = args.speed
+    if args.echo is not None:
+        global ECHO_DECAY
+        ECHO_DECAY = args.echo
 
     # Auto-detect title from YouTube if not provided
     if args.title:
