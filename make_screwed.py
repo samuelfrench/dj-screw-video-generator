@@ -366,6 +366,107 @@ def build_chop_zone(input_path, output_path, chop_time, magnitude, median_mag):
     print(f"    {kind}: backspin + {actual_phrase_len:.1f}s phrase x{repeats} (+{extra * actual_phrase_len:.1f}s)")
 
 
+def generate_intro(song_title, duration=20):
+    """Generate a DJ Screw-style intro using real Screw voice samples.
+
+    Uses pre-downloaded DJ Screw voice clips over a dark purple screen.
+    The voice is screwed (slowed + pitch down + echo) for authenticity.
+    Returns path to the intro video clip, or None if voice samples missing.
+    """
+    slug = slugify(song_title)
+    intro_path = BASE_DIR / f"intro_{slug}.mp4"
+    if intro_path.exists():
+        return intro_path
+
+    print("Generating DJ Screw intro with real voice samples...")
+
+    # Use pre-built intro if available, otherwise build from voice samples
+    prebuilt = BASE_DIR / "screw_intro_real.mp4"
+    if prebuilt.exists():
+        import shutil
+        shutil.copy2(str(prebuilt), str(intro_path))
+        print(f"  Intro ready: {get_duration(intro_path):.1f}s")
+        return intro_path
+
+    # Build from voice sample clips
+    voice_file = BASE_DIR / "screw_intro_voice.wav"
+    if not voice_file.exists():
+        print("  No DJ Screw voice samples found. Run with voice clips first.")
+        return None
+
+    font = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
+    intro_filter = (
+        f"color=c=0x1a0a2e:s=1280x720:d={duration},"
+        f"drawtext=fontfile={font}:text=DJ SCREW:fontsize=72:"
+        f"fontcolor=0xBB66EE@0.9:x=(w-text_w)/2:y=(h-text_h)/2-40:"
+        f"shadowcolor=black@0.7:shadowx=2:shadowy=2,"
+        f"drawtext=fontfile={font}:text=CHOPPED AND SCREWED:fontsize=36:"
+        f"fontcolor=0x9944CC@0.7:x=(w-text_w)/2:y=(h-text_h)/2+50:"
+        f"shadowcolor=black@0.5:shadowx=1:shadowy=1,"
+        f"vignette=PI/3[vintro];"
+        f"[0:a]asetrate=44100*0.55,aresample=44100,"
+        f"aecho=0.7:0.8:40:0.2,"
+        f"equalizer=f=50:t=q:w=0.7:g=5,"
+        f"equalizer=f=200:t=q:w=1:g=3,"
+        f"equalizer=f=2000:t=q:w=1:g=-4,"
+        f"apad=whole_dur={duration}[aintro]"
+    )
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(voice_file),
+        "-filter_complex", intro_filter,
+        "-map", "[vintro]", "-map", "[aintro]",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+        "-c:a", "aac", "-b:a", "256k",
+        "-shortest",
+        str(intro_path),
+    ]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    if r.returncode != 0:
+        print(f"  Intro video error: {r.stderr[-500:]}")
+        return None
+
+    print(f"  Intro generated: {get_duration(intro_path):.1f}s")
+    return intro_path
+
+
+def concat_intro(intro_path, main_path, output_path):
+    """Concatenate intro clip with main screwed video."""
+    # Normalize both to same format before concat
+    norm_intro = BASE_DIR / "intro_norm.mp4"
+    norm_main = BASE_DIR / "main_norm.mp4"
+
+    for src, dst in [(intro_path, norm_intro), (main_path, norm_main)]:
+        r = subprocess.run([
+            "ffmpeg", "-y", "-i", str(src),
+            "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+            "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2",
+            "-c:a", "aac", "-b:a", "256k", "-ar", "44100", "-ac", "2",
+            "-video_track_timescale", "90000",
+            str(dst)
+        ], capture_output=True, text=True, timeout=300)
+        if r.returncode != 0:
+            print(f"  Normalize error: {r.stderr[-500:]}")
+            return False
+
+    concat_file = BASE_DIR / "intro_concat.txt"
+    concat_file.write_text(f"file '{norm_intro}'\nfile '{norm_main}'\n")
+
+    r = subprocess.run([
+        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+        "-i", str(concat_file),
+        "-c", "copy", "-movflags", "+faststart",
+        str(output_path)
+    ], capture_output=True, text=True, timeout=120)
+
+    norm_intro.unlink(missing_ok=True)
+    norm_main.unlink(missing_ok=True)
+    concat_file.unlink(missing_ok=True)
+
+    return r.returncode == 0
+
+
 def build_screwed_video(chop_points):
     """Apply chopped & screwed effects.
 
@@ -493,6 +594,8 @@ def main():
                         help="Override screw speed (default 0.55, lower = slower)")
     parser.add_argument("--echo", type=float, default=None,
                         help="Echo decay (default 0.15, lower = less echo)")
+    parser.add_argument("--intro", action="store_true",
+                        help="Add DJ Screw spoken intro (leaned out rambling)")
     args = parser.parse_args()
 
     YT_URL = args.url
@@ -567,6 +670,22 @@ def main():
 
     # Step 4 & 5: Build screwed video with all effects
     build_screwed_video(chop_points)
+
+    # Step 6: Add spoken intro if requested
+    if args.intro:
+        intro_path = generate_intro(SONG_TITLE)
+        if intro_path:
+            print("Adding intro to screwed video...")
+            final_with_intro = OUTPUT.with_suffix('.with_intro.mp4')
+            if concat_intro(intro_path, OUTPUT, final_with_intro):
+                OUTPUT.unlink()
+                final_with_intro.rename(OUTPUT)
+                intro_path.unlink(missing_ok=True)
+                final_dur = get_duration(OUTPUT)
+                size_mb = os.path.getsize(OUTPUT) / (1024 * 1024)
+                print(f"Final with intro: {final_dur:.1f}s ({final_dur/60:.1f} min), {size_mb:.1f} MB")
+            else:
+                print("  Failed to add intro, keeping video without it")
 
     print("\nDone! Screwed video ready.")
 
